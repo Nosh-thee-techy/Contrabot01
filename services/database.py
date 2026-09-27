@@ -45,14 +45,52 @@ class Outcome(Base):
     accepted = Column(Boolean, nullable=False)
     chosen_method = Column(String(64), nullable=True)
     notes = Column(Text, nullable=True)
+    chw_id = Column(String(64), nullable=True, index=True)
+    followup = Column(String(32), nullable=True)
+    followup_at = Column(String(32), nullable=True)
+    session_id = Column(String(64), nullable=True, index=True)
+    created_at = Column(String(32), server_default=func.now())
+
+
+class Referral(Base):
+    __tablename__ = "referrals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(16), nullable=False, unique=True, index=True)
+    district = Column(String(128), nullable=False, index=True)
+    channel = Column(String(32), nullable=False, default="web")
+    method_interest = Column(String(64), nullable=True)
+    status = Column(String(32), nullable=False, default="open", index=True)
+    claimed_by_chw_id = Column(String(64), nullable=True)
+    notes = Column(Text, nullable=True)
     created_at = Column(String(32), server_default=func.now())
 
 
 def init_db() -> None:
     try:
         Base.metadata.create_all(bind=engine)
+        _ensure_columns()
     except Exception as exc:
         print(f"Database init skipped: {exc}")
+
+
+def _ensure_columns() -> None:
+    """Add MVP columns on existing SQLite/Postgres tables without a full migration tool."""
+    alterations = [
+        ("outcomes", "chw_id", "VARCHAR(64)"),
+        ("outcomes", "followup", "VARCHAR(32)"),
+        ("outcomes", "followup_at", "VARCHAR(32)"),
+        ("outcomes", "session_id", "VARCHAR(64)"),
+    ]
+    try:
+        with engine.begin() as conn:
+            for table, column, col_type in alterations:
+                try:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                except Exception:
+                    pass
+    except Exception as exc:
+        print(f"Schema ensure skipped: {exc}")
 
 
 def get_db() -> Session:

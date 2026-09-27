@@ -19,9 +19,11 @@ services/session.py (Redis)
 | --- | --- | --- | --- |
 | Backend API | `app/` | FastAPI API, USSD, WhatsApp, recommendation engine | `http://localhost:8000` |
 | Web app | `web/` | User-facing landing, chat, compare, facilities | `http://localhost:5173` |
-| CHW dashboard | `chw/` | CHW consult workflow and outcomes analytics | `http://localhost:5174` |
+| CHW dashboard | `chw/` | CHW consult workflow, referrals, outcomes analytics | `http://localhost:5174` |
 
 `frontend/` is the earlier React prototype. Use `web/` and `chw/` for the production-facing apps.
+
+CHW roles, referrals, and setup: [CHW.md](CHW.md).
 
 ## Data Sources
 
@@ -74,7 +76,7 @@ npm install
 npm run dev
 ```
 
-`chw/.env.example` defaults to mock mode so the dashboard can be demonstrated quickly.
+`chw/.env.example` defaults to mock mode so the dashboard can be demonstrated quickly. Set `VITE_USE_MOCK=false` and `VITE_API_URL` to sync outcomes/referrals to the backend. See [CHW.md](CHW.md).
 
 ## API Endpoints
 
@@ -86,9 +88,15 @@ npm run dev
 | GET | `/facilities?district=` | Nearest clinics |
 | POST | `/outcomes` | CHW outcome logging |
 | GET | `/analytics/outcomes` | Aggregated outcomes |
+| POST | `/referrals` | Create anonymous CHW referral |
+| GET | `/referrals?district=` | List referral queue |
+| PATCH | `/referrals/{id}` | Claim / complete referral |
 | GET | `/methods/compare` | Method comparison table |
 | POST/GET | `/ussd` | Africa's Talking USSD |
 | GET/POST | `/whatsapp` or `/webhook` | Meta WhatsApp |
+
+WhatsApp setup and usage: [WHATSAPP.md](WHATSAPP.md). Production deployment detail: [whatsapp_production_guide.md](whatsapp_production_guide.md).
+CHW dashboard: [CHW.md](CHW.md).
 
 The same product API is also mounted under `/api` for the Vite frontends.
 
@@ -127,6 +135,9 @@ The Python suite covers engine safety behavior and WhatsApp webhook handling. Th
 - [ ] Real facility exports have been imported into `data/facilities/`
 - [ ] APHRC data has been ingested with `python ingest.py`
 - [ ] Production `.env` values are configured for API, Redis, PostgreSQL, and CORS
+- [ ] CHW app has `VITE_API_URL` set and mock mode off for live outcome/referral sync
+- [ ] `VITE_WHATSAPP_NUMBER` set in `web/.env` and `chw/.env` for WhatsApp deep links
+- [ ] CHWs onboard with district + CHW ID; supervisors use supervisor role for analytics
 
 ---
 

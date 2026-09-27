@@ -2,6 +2,8 @@
 
 This guide explains how the ContraBot WhatsApp integration works under the hood and outlines the steps to deploy it to a production environment using Meta's Cloud API.
 
+For a shorter how-to (user flow, env vars, local ngrok setup), start with [WHATSAPP.md](WHATSAPP.md).
+
 ---
 
 ## 🏗️ Architecture & Message Flow
@@ -31,20 +33,24 @@ graph TD
 The session ID is the user's phone number. User state is loaded from `session_store` with a 30-minute (1800s) TTL:
 * **Stage Flow**:
   1. `language`: Welcomes user and sends an Interactive List message.
-  2. `age`: Prompts for age.
-  3. `breastfeeding`: Buttons (Yes/No).
-  4. `health_flags`: Buttons (Yes/No).
-  5. `preference`: Buttons (Daily/Long-acting).
-  6. `access`: Buttons (Yes/No).
-  7. `district`: Text input.
-  8. `recommendation` & `facility_lookup`: Recommendations are generated and presented with a clinic lookup prompt.
-  9. `chat`: Free-form Q&A mode.
+  2. `name`: Text input for preferred name.
+  3. `gender`: Buttons (Female/Male).
+  4. `age`: Prompts for age.
+  5. `breastfeeding`: Buttons (Yes/No) — female path only.
+  6. `health_flags`: Buttons (Yes/No) — female path only.
+  7. `preference`: Buttons (Daily/Long-acting) — female path only.
+  8. `access`: Buttons (Yes/No).
+  9. `district`: Text input.
+  10. `recommendation` & `facility_lookup`: Recommendations are generated and presented with a clinic lookup prompt.
+  11. `chat`: Free-form Q&A mode.
 
 ### 3. Location-Based Nearest Clinic Lookup
 If the user reaches the clinic lookup step and clicks "Find clinic", they can send their GPS location. The bot extracts the coordinate lat/lng, calculates distance against PostgreSQL facilities, and returns the top 3 nearest clinics.
 
 ### 4. Transition to AI Chat Mode (RAG + LLM)
 Once the intake flow is finished, the session does not close. It transitions to `chat` stage. The user can type free-form questions (e.g., *"what are the side-effects of implants?"*). The bot uses semantic search (ChromaDB) to fetch context from WHO MEC guidelines and feeds it to the LLM (Gemini/OpenAI) to return plain-text, non-prescriptive counseling answers.
+
+Users can also tap **Talk to CHW** to create an anonymous district referral code (no phone number stored). See [CHW.md](CHW.md).
 
 ---
 

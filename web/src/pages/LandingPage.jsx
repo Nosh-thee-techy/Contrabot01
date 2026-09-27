@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Lock, ListChecks, Sparkles, MapPin } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { LanguageSelector } from "@/components/LanguageSelector";
+import { WhatsAppLink } from "@/components/WhatsAppLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAppStore } from "@/store/useAppStore";
@@ -38,9 +39,12 @@ export default function LandingPage() {
         <section className="py-12 text-center">
           <h1 className="text-3xl font-semibold text-ink sm:text-4xl">{t("heroTitle")}</h1>
           <p className="mx-auto mt-4 max-w-xl text-lg text-muted">{t("heroSub")}</p>
-          <Button size="lg" className="mt-8" onClick={() => navigate("/chat")}>
-            {t("startCta")}
-          </Button>
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+            <Button size="lg" onClick={() => navigate("/chat")}>
+              {t("startCta")}
+            </Button>
+            <WhatsAppLink label={t("whatsappCta")} />
+          </div>
           <div className="mt-8 flex flex-wrap justify-center gap-6 text-sm text-muted">
             <span>🔒 {t("trustPrivate")}</span>
             <span>🌍 {t("trustLang")}</span>

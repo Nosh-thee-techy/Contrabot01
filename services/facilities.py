@@ -1,7 +1,6 @@
 import math
 from typing import Optional
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from services.database import Facility, Outcome, get_db
@@ -92,7 +91,17 @@ def format_facilities_message(facilities: list[dict], max_chars: int = 160) -> s
     return msg[:max_chars]
 
 
-def log_outcome(district: str, recommended_method: str, accepted: bool, chosen_method: Optional[str] = None, notes: Optional[str] = None) -> bool:
+def log_outcome(
+    district: str,
+    recommended_method: str,
+    accepted: bool,
+    chosen_method: Optional[str] = None,
+    notes: Optional[str] = None,
+    chw_id: Optional[str] = None,
+    followup: Optional[str] = None,
+    followup_at: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> bool:
     db = get_db()
     try:
         db.add(
@@ -102,6 +111,10 @@ def log_outcome(district: str, recommended_method: str, accepted: bool, chosen_m
                 accepted=accepted,
                 chosen_method=chosen_method,
                 notes=notes,
+                chw_id=chw_id,
+                followup=followup,
+                followup_at=followup_at,
+                session_id=session_id,
             )
         )
         db.commit()
@@ -113,24 +126,31 @@ def log_outcome(district: str, recommended_method: str, accepted: bool, chosen_m
         db.close()
 
 
-def get_outcome_analytics() -> dict:
+def get_outcome_analytics(district: Optional[str] = None) -> dict:
     db = get_db()
     try:
-        by_method = (
-            db.query(Outcome.recommended_method, func.count(Outcome.id))
-            .group_by(Outcome.recommended_method)
-            .all()
-        )
-        by_district = (
-            db.query(Outcome.district, func.count(Outcome.id))
-            .group_by(Outcome.district)
-            .all()
-        )
+        query = db.query(Outcome)
+        if district:
+            query = query.filter(Outcome.district.ilike(f"%{district}%"))
+        rows = query.all()
+
+        by_method: dict[str, int] = {}
+        by_district: dict[str, int] = {}
+        accepted = 0
+        for row in rows:
+            by_method[row.recommended_method] = by_method.get(row.recommended_method, 0) + 1
+            by_district[row.district] = by_district.get(row.district, 0) + 1
+            if row.accepted:
+                accepted += 1
+
         return {
-            "by_method": {m: c for m, c in by_method},
-            "by_district": {d: c for d, c in by_district},
+            "total": len(rows),
+            "accepted": accepted,
+            "acceptance_rate": round((accepted / len(rows)) * 100) if rows else 0,
+            "by_method": by_method,
+            "by_district": by_district,
         }
     except Exception:
-        return {"by_method": {}, "by_district": {}}
+        return {"total": 0, "accepted": 0, "acceptance_rate": 0, "by_method": {}, "by_district": {}}
     finally:
         db.close()

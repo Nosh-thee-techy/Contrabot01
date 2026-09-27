@@ -1,14 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Helmet } from "react-helmet-async";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectItem } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { ChwRecommendPanel } from "@/components/ChwRecommendPanel";
-import { postRecommend, getFacilities } from "@/api/client";
+import { postRecommend, getFacilities, postOutcome } from "@/api/client";
 import { useChwStore } from "@/store/useChwStore";
 import { AGE_GROUPS, HEALTH_OPTS, RED_FLAGS, METHODS_LIST, toApiPayload } from "@/lib/constants";
 
@@ -24,15 +25,48 @@ const emptyForm = {
   district: "",
 };
 
+function defaultFollowupAt() {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  return d.toISOString().slice(0, 10);
+}
+
 export default function ConsultPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { profile, addSession, addOutcome } = useChwStore();
-  const [form, setForm] = useState({ ...emptyForm, district: profile?.district || "" });
+  const referralCode = searchParams.get("referral") || "";
+  const districtParam = searchParams.get("district") || "";
+
+  const [form, setForm] = useState({
+    ...emptyForm,
+    district: districtParam || profile?.district || "",
+  });
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [facilities, setFacilities] = useState(null);
-  const [outcome, setOutcome] = useState({ accepted: "yes", method: "", followup: "yes", notes: "" });
+  const [activeSessionId, setActiveSessionId] = useState(null);
+  const [outcome, setOutcome] = useState({
+    accepted: "yes",
+    method: "",
+    followup: "yes",
+    followup_at: defaultFollowupAt(),
+    notes: "",
+  });
+
+  useEffect(() => {
+    if (profile?.role === "supervisor") {
+      navigate("/");
+    }
+  }, [profile, navigate]);
+
+  useEffect(() => {
+    if (districtParam || profile?.district) {
+      setForm((f) => ({ ...f, district: districtParam || profile?.district || f.district }));
+    }
+  }, [districtParam, profile?.district]);
 
   const hasRedFlag = form.health_flags.some((f) => RED_FLAGS.has(f));
   const valid =
@@ -62,12 +96,18 @@ export default function ConsultPage() {
       const payload = toApiPayload(form);
       const data = await postRecommend(payload);
       setResult(data);
-      addSession({
+      const started = new Date().toISOString();
+      const session = addSession({
         age_group: form.age_group,
         top_method: data.recommendations?.[0]?.method,
         outcome_logged: false,
         notes: "",
+        started_at: started,
+        at: started,
+        referral_code: referralCode || undefined,
+        district: form.district || profile?.district,
       });
+      setActiveSessionId(session.id);
     } catch {
       setError("Could not generate recommendation. Check your connection or try mock mode.");
     } finally {
@@ -75,20 +115,38 @@ export default function ConsultPage() {
     }
   };
 
-  const saveOutcome = () => {
+  const saveOutcome = async () => {
     const top = result?.recommendations?.[0]?.method;
-    addOutcome({
-      district: profile?.district || form.district,
+    const followup = outcome.followup === "yes" ? "scheduled" : outcome.followup;
+    const payload = {
+      district: profile?.district || form.district || "Unknown",
       recommended_method: top,
       accepted: outcome.accepted === "yes",
       chosen_method: outcome.method || top,
-      followup: outcome.followup,
+      followup,
+      followup_at: followup === "scheduled" ? outcome.followup_at : null,
       notes: outcome.notes?.slice(0, 200),
-    });
-    navigate("/consult");
-    setForm({ ...emptyForm, district: profile?.district || "" });
-    setResult(null);
-    setOutcome({ accepted: "yes", method: "", followup: "yes", notes: "" });
+      chw_id: profile?.chw_id || null,
+      session_id: activeSessionId,
+    };
+
+    setSaving(true);
+    setError("");
+    try {
+      await postOutcome(payload);
+      addOutcome({ ...payload, at: new Date().toISOString() });
+      navigate("/");
+    } catch {
+      // Still keep local copy so field work isn't lost offline
+      addOutcome({ ...payload, at: new Date().toISOString(), sync_failed: true });
+      setError("Saved locally. Could not sync to server — check API connection.");
+    } finally {
+      setSaving(false);
+      setForm({ ...emptyForm, district: profile?.district || "" });
+      setResult(null);
+      setActiveSessionId(null);
+      setOutcome({ accepted: "yes", method: "", followup: "yes", followup_at: defaultFollowupAt(), notes: "" });
+    }
   };
 
   const findFacility = async () => {
@@ -107,7 +165,10 @@ export default function ConsultPage() {
         <Link to="/" className="text-sm text-primary hover:underline">
           ← Dashboard
         </Link>
-        <h1 className="mt-4 text-2xl font-semibold">New consultation</h1>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold">New consultation</h1>
+          {referralCode && <Badge variant="secondary">Referral {referralCode}</Badge>}
+        </div>
 
         <div className="mt-8 grid gap-8 lg:grid-cols-2">
           <div className="space-y-6">
@@ -273,20 +334,30 @@ export default function ConsultPage() {
                 <div>
                   <Label>Follow-up?</Label>
                   <div className="mt-2 flex flex-wrap gap-4 text-sm">
-                    {["yes", "no", "referred"].map((v) => (
+                    {[
+                      ["yes", "Schedule"],
+                      ["no", "No"],
+                      ["referred", "Referred to clinic"],
+                    ].map(([v, l]) => (
                       <label key={v}>
                         <input type="radio" name="fu" checked={outcome.followup === v} onChange={() => setOutcome({ ...outcome, followup: v })} className="mr-1" />
-                        {v === "referred" ? "Referred to clinic" : v}
+                        {l}
                       </label>
                     ))}
                   </div>
                 </div>
+                {outcome.followup === "yes" && (
+                  <div>
+                    <Label>Follow-up date</Label>
+                    <Input type="date" value={outcome.followup_at} onChange={(e) => setOutcome({ ...outcome, followup_at: e.target.value })} />
+                  </div>
+                )}
                 <div>
                   <Label>Notes (optional)</Label>
                   <Textarea maxLength={200} value={outcome.notes} onChange={(e) => setOutcome({ ...outcome, notes: e.target.value })} />
                 </div>
-                <Button variant="outline" className="w-full" onClick={saveOutcome}>
-                  Save & new session →
+                <Button variant="outline" className="w-full" disabled={saving} onClick={saveOutcome}>
+                  {saving ? "Saving…" : "Save & return to dashboard →"}
                 </Button>
               </Card>
             )}

@@ -11,9 +11,10 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from langdetect import detect, LangDetectException
 
-from channels.intake import LANGUAGE_LABELS, get_prompt_for_stage, new_session, process_intake_input
+from channels.intake import get_prompt_for_stage, new_session, process_intake_input
 from services.session import session_store
 from services.knowledge import query_all_collections
+from services.referrals import create_referral
 from engine.recommender import load_system_prompt
 from app.openai_client import chat_completion
 from channels.whatsapp_logger import logger
@@ -192,6 +193,8 @@ def _normalize_button_input(text: str) -> str:
     mapping = {
         "yes": "1",
         "no": "2",
+        "female": "1",
+        "male": "2",
         "daily": "1",
         "long_acting": "2",
         "set-forget": "2",
@@ -203,29 +206,92 @@ def _normalize_button_input(text: str) -> str:
         "access_no": "2",
         "facility_yes": "1",
         "facility_no": "2",
+        "talk_chw": "talk_chw",
+        "ask_more": "ask_more",
     }
     return mapping.get(text.lower(), text)
 
-async def send_language_list(phone_number: str) -> bool:
-    sections = [
-        {
-            "title": "Languages",
-            "rows": [
-                {"id": "1", "title": "English", "description": "Choose English"},
-                {"id": "2", "title": "Kiswahili", "description": "Chagua Kiswahili"},
-                {"id": "3", "title": "Luganda", "description": "Londa Oluganda"},
-                {"id": "4", "title": "French", "description": "Choisir le Français"},
-                {"id": "5", "title": "Kinyarwanda", "description": "Hitamo Ikinyarwanda"},
-                {"id": "6", "title": "Sheng", "description": "Chagua Sheng"},
-            ]
-        }
-    ]
-    return await send_list(
-        phone_number,
-        body="Welcome to ContraBot. Choose language / Karibu kwenye ContraBot. Chagua lugha:",
-        button_label="Select Language",
-        sections=sections
+async def _send_chw_referral(phone_number: str, session: dict) -> dict:
+    """Create anonymous CHW referral and reply with short code. Never stores phone numbers."""
+    profile = session.get("profile") or {}
+    district = profile.get("district") or "Unknown"
+    method = None
+    last = session.get("last_recommendation") or {}
+    if isinstance(last, dict):
+        method = last.get("top_method")
+    row = create_referral(
+        district=district,
+        channel="whatsapp",
+        method_interest=method,
+        notes="Requested via WhatsApp Talk to a CHW",
     )
+    if not row:
+        await send_text(
+            phone_number,
+            "Sorry — I could not create a CHW referral right now. Please try again or visit a nearby clinic.",
+        )
+        return session
+
+    session["referral_code"] = row["code"]
+    lang = session.get("language", "english")
+    if lang == "kiswahili":
+        msg = (
+            f"Ombi lako la CHW limewasilishwa. Mpe CHW msimbo huu: {row['code']}. "
+            f"Wilaya: {district}. Hatuhifadhi namba yako ya simu."
+        )
+    elif lang == "sheng":
+        msg = (
+            f"Referral iko ready msee. Mpe CHW code hii: {row['code']}. "
+            f"Mtaa: {district}. Haturudishi number yako."
+        )
+    else:
+        msg = (
+            f"Your CHW referral is ready. Tell your CHW this code: {row['code']}. "
+            f"District: {district}. We do not store your phone number."
+        )
+    await send_text(phone_number, msg)
+    return session
+
+async def send_welcome_intro(phone_number: str) -> bool:
+    """Friendly first greeting before the language picker."""
+    return await send_text(
+        phone_number,
+        "Karibu ContraBot. 💚\n\n"
+        "I can help you choose safe contraception — privately.\n\n"
+        "Choose your language:",
+    )
+
+
+WHATSAPP_LANGUAGE_IDS = {"1", "2", "english", "kiswahili"}
+
+
+async def send_language_list(phone_number: str, with_intro: bool = False) -> bool:
+    """Offer English or Kiswahili as quick-reply buttons."""
+    if with_intro:
+        await send_welcome_intro(phone_number)
+
+    return await send_buttons(
+        phone_number,
+        "Choose your language / Chagua lugha:",
+        [("1", "English"), ("2", "Kiswahili")],
+    )
+
+
+def _whatsapp_name_prompt(language: str) -> str:
+    prompts = {
+        "english": "Great — English it is.\n\nWhat is your name?",
+        "kiswahili": "Poa! Tutaongea kwa Kiswahili.\n\nUnaitwa nani?",
+    }
+    return prompts.get(language, prompts["english"])
+
+
+async def start_whatsapp_session(phone_number: str) -> dict:
+    """Create a fresh session and send the interactive language welcome."""
+    session = new_session(phone_number, CHANNEL)
+    session_store.set(phone_number, session, CHANNEL, ttl=1800)
+    await send_language_list(phone_number, with_intro=True)
+    return session
+
 
 async def handle_whatsapp_webhook(request: Request) -> JSONResponse:
     body_bytes = await request.body()
@@ -292,53 +358,55 @@ async def handle_whatsapp_webhook(request: Request) -> JSONResponse:
         # Handle unsupported media messages (graceful fallback)
         if not body and msg_kind in ("image", "document", "audio", "video", "sticker", "voice"):
             if not session:
-                await send_text(
-                    phone_number, 
-                    "Welcome to ContraBot. I can only process text or list selections. Please type 'start' or 'hi' to begin."
-                )
+                await start_whatsapp_session(phone_number)
             else:
                 await send_text(
-                    phone_number, 
-                    "Thanks, but I can only process text questions or button options. Please send a text message."
+                    phone_number,
+                    "Thanks — I work best with text or the buttons/lists I send. Please reply with text.",
                 )
             continue
 
         # Command detection to restart session at any point
         if body.lower() in ("restart", "menu", "start over", "new"):
             session_store.delete(session_id, CHANNEL)
-            session = new_session(phone_number, CHANNEL)
-            session_store.set(session_id, session, CHANNEL, ttl=1800)
-            await send_language_list(phone_number)
+            await start_whatsapp_session(phone_number)
             continue
 
-        # If welcome or hello sent, and no session, start session
-        if not session and msg_kind == "text":
-            detected = _detect_language(body)
-            session = new_session(phone_number, CHANNEL)
-            session["language"] = detected if detected in LANGUAGE_LABELS else "english"
-            session_store.set(session_id, session, CHANNEL, ttl=1800)
-            await send_buttons(
-                phone_number,
-                f"Welcome to ContraBot ({session['language'].capitalize()}). Start counseling?",
-                [("start", "Start"), ("help", "Help")],
-            )
-            continue
-
-        # Generic hello when already in a session but at the starting gate
-        if body.lower() in ("help", "hi", "hello") and not session:
-            await send_text(phone_number, "ContraBot helps you find safe contraception. Reply Start to begin.")
-            continue
-
+        # First contact: greet + ask language immediately
         if not session:
-            # Fallback if somehow ended up here without a session
-            session = new_session(phone_number, CHANNEL)
-            session_store.set(session_id, session, CHANNEL, ttl=1800)
-            await send_language_list(phone_number)
+            await start_whatsapp_session(phone_number)
             continue
 
-        # Handle welcome button response
-        if body.lower() == "start" and session.get("stage") == "language":
-            await send_language_list(phone_number)
+        # Greetings while still on language step re-show the picker
+        if body.lower() in ("hi", "hello", "habari", "heita", "start", "karibu") and session.get("stage") == "language":
+            await send_language_list(phone_number, with_intro=True)
+            continue
+
+        # Help while still choosing language
+        if body.lower() == "help":
+            await send_text(
+                phone_number,
+                "I'm ContraBot. I help you choose safe contraception in private.\n\n"
+                "Pick a language, answer a few questions, then ask anything.\n"
+                "Type *restart* to start over.",
+            )
+            if session.get("stage") == "language":
+                await send_language_list(phone_number, with_intro=False)
+            continue
+
+        # Anonymous CHW referral (no phone numbers stored server-side)
+        if body.lower() in ("talk_chw", "talk to a chw", "talk to chw", "chw", "community health worker"):
+            session = await _send_chw_referral(phone_number, session)
+            session_store.set(session_id, session, CHANNEL, ttl=1800)
+            continue
+
+        if body.lower() == "ask_more":
+            session["stage"] = "chat"
+            session_store.set(session_id, session, CHANNEL, ttl=1800)
+            await send_text(
+                phone_number,
+                "Ask me anything about side effects, methods, or clinics. Type *restart* to begin again.",
+            )
             continue
 
         # Handle coordinate lookup in awaiting_facility stage
@@ -350,16 +418,16 @@ async def handle_whatsapp_webhook(request: Request) -> JSONResponse:
                 from services.facilities import find_facilities_by_coords, format_facilities_message
                 facilities = find_facilities_by_coords(lat, lng)
                 reply = format_facilities_message(facilities, max_chars=300)
-                
-                # Update session to chat mode
+
                 session["stage"] = "chat"
                 session["awaiting_facility"] = False
                 session_store.set(session_id, session, CHANNEL, ttl=1800)
-                
+
                 await send_text(phone_number, reply)
-                await send_text(
+                await send_buttons(
                     phone_number,
-                    "You are now in free-form chat mode. You can ask me any questions about side effects, contraception methods, or type 'restart' to start over."
+                    "What next?",
+                    [("talk_chw", "Talk to CHW"), ("ask_more", "Ask a question")],
                 )
                 continue
             except Exception as exc:
@@ -372,14 +440,18 @@ async def handle_whatsapp_webhook(request: Request) -> JSONResponse:
             if msg_kind in ("image", "document", "audio", "video", "sticker", "voice"):
                 await send_text(phone_number, "I can only process text questions in chat mode. Please type your message.")
                 continue
-                
+
+            if body.lower() in ("talk_chw", "talk to a chw", "talk to chw", "chw"):
+                session = await _send_chw_referral(phone_number, session)
+                session_store.set(session_id, session, CHANNEL, ttl=1800)
+                continue
+
             lang = session.get("language", "english")
             try:
-                # Query RAG context
                 rag = query_all_collections(body, num_results=2)
                 context = "\n".join(rag[:2]) if rag else ""
                 system = load_system_prompt()
-                
+
                 reply = chat_completion(
                     messages=[
                         {"role": "system", "content": system},
@@ -389,38 +461,60 @@ async def handle_whatsapp_webhook(request: Request) -> JSONResponse:
                     temperature=0.6,
                 )
                 await send_text(phone_number, reply.strip()[:300])
+                await send_buttons(
+                    phone_number,
+                    "Need a person instead?",
+                    [("talk_chw", "Talk to CHW"), ("ask_more", "Ask more")],
+                )
             except Exception as exc:
                 logger.error(f"Chat completion failed: {exc}", extra={"phone": phone_number})
                 await send_text(
                     phone_number,
-                    "I'm sorry, I'm having trouble processing that query right now. Feel free to try again or type 'restart' to start over."
+                    "I'm sorry, I'm having trouble processing that query right now. Feel free to try again or type *restart* to start over.",
                 )
             continue
 
+        # At language stage: only English / Kiswahili
+        if session.get("stage") == "language" and msg_kind in ("text", "button", "list"):
+            lowered = body.lower().strip()
+            if lowered not in WHATSAPP_LANGUAGE_IDS:
+                await send_text(phone_number, "Please choose English or Kiswahili / Chagua English au Kiswahili:")
+                await send_language_list(phone_number, with_intro=False)
+                continue
+
         # Standard intake flow processing
         normalized = _normalize_button_input(body)
+        prev_stage = session.get("stage")
         try:
             session, reply, end = process_intake_input(session, normalized)
         except Exception as exc:
             logger.error(f"Error in process_intake_input: {exc}", extra={"phone": phone_number}, exc_info=True)
             await send_text(
-                phone_number, 
-                "An unexpected error occurred. Let's restart the conversation."
+                phone_number,
+                "An unexpected error occurred. Let's restart — type *hi* to begin again.",
             )
             session_store.delete(session_id, CHANNEL)
             continue
 
+        # Warm WhatsApp name prompt right after language pick
+        if prev_stage == "language" and session.get("stage") == "name" and not end:
+            reply = _whatsapp_name_prompt(session.get("language", "english"))
+
         if end:
-            # Transition to chat mode instead of deleting session
             await send_text(phone_number, reply)
-            
+
             session["stage"] = "chat"
             session["awaiting_facility"] = False
             session_store.set(session_id, session, CHANNEL, ttl=1800)
-            
+
             await send_text(
                 phone_number,
-                "You are now in free-form chat mode. You can ask me any questions about side effects, contraception methods, or type 'restart' to start over."
+                "You are now in free-form chat mode. You can ask questions about side effects or methods, or connect with a CHW.",
+            )
+            await send_buttons(
+                phone_number,
+                "What next?",
+                [("talk_chw", "Talk to CHW"), ("ask_more", "Ask a question")],
             )
             continue
 
@@ -462,11 +556,11 @@ async def handle_whatsapp_webhook(request: Request) -> JSONResponse:
         if session.get("awaiting_facility"):
             lang = session.get("language", "english")
             if lang == "sheng":
-                facility_buttons = [("facility_yes", "Nionyeshe kliniki"), ("facility_no", "Zii, niko sawa")]
+                facility_buttons = [("facility_yes", "Nionyeshe kliniki"), ("facility_no", "Zii, niko sawa"), ("talk_chw", "Ongea na CHW")]
             elif lang == "kiswahili":
-                facility_buttons = [("facility_yes", "Tafuta kliniki"), ("facility_no", "La, nimekamilisha")]
+                facility_buttons = [("facility_yes", "Tafuta kliniki"), ("facility_no", "La, nimekamilisha"), ("talk_chw", "Ongea na CHW")]
             else:
-                facility_buttons = [("facility_yes", "Find clinic"), ("facility_no", "Done")]
+                facility_buttons = [("facility_yes", "Find clinic"), ("facility_no", "Done"), ("talk_chw", "Talk to CHW")]
             await send_buttons(phone_number, reply, facility_buttons)
         else:
             await send_text(phone_number, reply)

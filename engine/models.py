@@ -204,6 +204,10 @@ class OutcomeLog(BaseModel):
     accepted: bool
     chosen_method: Optional[str] = None
     notes: Optional[str] = None
+    chw_id: Optional[str] = None
+    followup: Optional[str] = None
+    followup_at: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -214,3 +218,15 @@ class ChatRequest(BaseModel):
 
 class RecommendRequest(BaseModel):
     profile: UserProfile
+
+
+class ReferralCreate(BaseModel):
+    district: str
+    channel: str = "web"
+    method_interest: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ReferralClaim(BaseModel):
+    chw_id: Optional[str] = None
+    status: str = "claimed"

@@ -1,18 +1,42 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Check, Info, Shield, Compass } from "lucide-react";
+import { Check, Info, Shield, Compass, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { useAppStore } from "@/store/useAppStore";
+import { createReferral } from "@/api/client";
 
 export function RecommendationCard({ data, onShowVisualization }) {
   const navigate = useNavigate();
   const setSelectedMethods = useAppStore((s) => s.setSelectedMethods);
+  const [district, setDistrict] = useState("");
+  const [referralState, setReferralState] = useState({ loading: false, code: null, error: null });
 
   if (!data?.recommendations?.length) return null;
 
+  const requestChw = async () => {
+    const d = district.trim();
+    if (!d) {
+      setReferralState({ loading: false, code: null, error: "Enter your district first." });
+      return;
+    }
+    setReferralState({ loading: true, code: null, error: null });
+    try {
+      const row = await createReferral({
+        district: d,
+        channel: "web",
+        method_interest: data.recommendations[0]?.method,
+        notes: "Requested from web recommendation card",
+      });
+      setReferralState({ loading: false, code: row.code, error: null });
+    } catch {
+      setReferralState({ loading: false, code: null, error: "Could not create referral. Try again." });
+    }
+  };
+
   return (
     <div className="w-full bg-white/5 border-t-[3px] border-t-[#0E7A80] border-x border-b border-white/5 rounded-2xl p-5 shadow-2xl space-y-5">
-      {/* Heading */}
       <div className="flex items-center justify-between border-b border-white/5 pb-3">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-teal-400" />
@@ -23,7 +47,6 @@ export function RecommendationCard({ data, onShowVisualization }) {
         </Badge>
       </div>
 
-      {/* Recommended Methods Grid (Side-by-side on desktop, stacked on mobile) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {data.recommendations.map((m) => (
           <div
@@ -32,11 +55,7 @@ export function RecommendationCard({ data, onShowVisualization }) {
           >
             <div className="space-y-2.5">
               <h4 className="font-bold text-white text-base leading-tight">{m.name}</h4>
-              <p className="text-xs text-[#7A9BA8] leading-relaxed line-clamp-3">
-                {m.description}
-              </p>
-              
-              {/* Row of custom colored badges */}
+              <p className="text-xs text-[#7A9BA8] leading-relaxed line-clamp-3">{m.description}</p>
               <div className="flex flex-wrap gap-1.5 pt-1">
                 <Badge variant="outline" className="bg-[#2E7D32]/10 border-[#2E7D32]/20 text-green-400 text-[10px] py-0 px-2 font-medium">
                   {Math.round(m.effectiveness_typical * 100)}% Effective
@@ -50,7 +69,6 @@ export function RecommendationCard({ data, onShowVisualization }) {
               </div>
             </div>
 
-            {/* Action button */}
             {onShowVisualization && (
               <Button
                 type="button"
@@ -66,7 +84,6 @@ export function RecommendationCard({ data, onShowVisualization }) {
         ))}
       </div>
 
-      {/* Orange Callout Bar */}
       <div className="bg-[#E07B39]/10 border border-[#E07B39]/30 rounded-xl p-3.5 flex items-start gap-2.5">
         <Info className="h-4.5 w-4.5 text-[#E07B39] shrink-0 mt-0.5" />
         <p className="text-xs text-[#E8F4F5] leading-relaxed">
@@ -74,7 +91,37 @@ export function RecommendationCard({ data, onShowVisualization }) {
         </p>
       </div>
 
-      {/* CTA Buttons */}
+      <div className="rounded-xl border border-[#0E7A80]/25 bg-[#0E7A80]/10 p-3.5 space-y-3">
+        <p className="text-xs font-semibold text-white flex items-center gap-2">
+          <Users className="h-4 w-4 text-teal-300" /> Request CHW follow-up
+        </p>
+        <p className="text-[11px] text-[#7A9BA8]">
+          We create an anonymous code for a CHW in your district. No phone number is stored.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Input
+            value={district}
+            onChange={(e) => setDistrict(e.target.value)}
+            placeholder="Your district (e.g. Nairobi)"
+            className="bg-[#0D1B2A] border-[#0E7A80]/30 text-white placeholder:text-[#7A9BA8]"
+          />
+          <Button
+            type="button"
+            disabled={referralState.loading}
+            onClick={requestChw}
+            className="bg-[#25D366] hover:bg-[#1ebe57] text-white font-bold text-xs whitespace-nowrap"
+          >
+            {referralState.loading ? "Sending…" : "Request CHW"}
+          </Button>
+        </div>
+        {referralState.code && (
+          <p className="text-xs text-teal-200">
+            Tell your CHW this code: <strong className="font-mono text-white text-sm">{referralState.code}</strong>
+          </p>
+        )}
+        {referralState.error && <p className="text-xs text-[#E07B39]">{referralState.error}</p>}
+      </div>
+
       <div className="flex flex-col sm:flex-row gap-3 pt-1">
         <Button
           onClick={() => navigate("/facilities")}

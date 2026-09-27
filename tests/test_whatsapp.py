@@ -95,6 +95,9 @@ def test_normalize_button_input():
     assert _normalize_button_input("breastfeeding_yes") == "1"
     assert _normalize_button_input("breastfeeding_no") == "2"
     assert _normalize_button_input("daily") == "1"
+    assert _normalize_button_input("female") == "1"
+    assert _normalize_button_input("male") == "2"
+    assert _normalize_button_input("facility_yes") == "1"
     assert _normalize_button_input("any_other") == "any_other"
 
 @pytest.mark.asyncio
@@ -176,12 +179,15 @@ async def test_handle_whatsapp_webhook_unsupported_media(mock_send):
     req = make_mock_request("POST", json.dumps(media_payload).encode())
     resp = await handle_whatsapp_webhook(req)
     assert resp.status_code == 200
-    
-    # Verify we sent the unsupported media message fallback (after marking read)
-    assert mock_send.call_count == 2
-    sent_payload = mock_send.call_args_list[1][0][1]
-    assert "text" in sent_payload
-    assert "Welcome to ContraBot. I can only process text or list selections" in sent_payload["text"]["body"]
+
+    # No session: welcome intro text + language buttons
+    assert mock_send.call_count == 3  # mark read + intro + language buttons
+    intro = mock_send.call_args_list[1][0][1]
+    assert "Welcome to ContraBot" in intro["text"]["body"]
+    lang_choice = mock_send.call_args_list[2][0][1]
+    assert lang_choice["interactive"]["type"] == "button"
+    titles = [b["reply"]["title"] for b in lang_choice["interactive"]["action"]["buttons"]]
+    assert titles == ["English", "Kiswahili"]
 
 @pytest.mark.asyncio
 @patch("channels.whatsapp._send_payload", new_callable=AsyncMock)
@@ -204,12 +210,16 @@ async def test_handle_whatsapp_webhook_start_flow(mock_send):
     req = make_mock_request("POST", json.dumps(payload).encode())
     resp = await handle_whatsapp_webhook(req)
     assert resp.status_code == 200
-    
-    # Welcome buttons should be sent (after marking read)
-    assert mock_send.call_count == 2
-    sent_payload = mock_send.call_args_list[1][0][1]
-    assert sent_payload["interactive"]["type"] == "button"
-    assert "Start counseling?" in sent_payload["interactive"]["body"]["text"]
+
+    # mark read + intro text + language buttons
+    assert mock_send.call_count == 3
+    intro = mock_send.call_args_list[1][0][1]
+    assert "Welcome to ContraBot" in intro["text"]["body"]
+    assert "Choose your language" in intro["text"]["body"]
+    lang_choice = mock_send.call_args_list[2][0][1]
+    assert lang_choice["interactive"]["type"] == "button"
+    titles = [b["reply"]["title"] for b in lang_choice["interactive"]["action"]["buttons"]]
+    assert titles == ["English", "Kiswahili"]
 
 @pytest.mark.asyncio
 @patch("channels.whatsapp._send_payload", new_callable=AsyncMock)
@@ -232,7 +242,7 @@ async def test_handle_whatsapp_webhook_language_list(mock_send):
                         "id": "msg_lang_1",
                         "from": "254700000000",
                         "type": "text",
-                        "text": {"body": "start"}
+                        "text": {"body": "hi"}
                     }]
                 }
             }]
@@ -242,11 +252,12 @@ async def test_handle_whatsapp_webhook_language_list(mock_send):
     resp = await handle_whatsapp_webhook(req)
     assert resp.status_code == 200
     
-    # Language list message should be sent (after marking read)
-    assert mock_send.call_count == 2
-    sent_payload = mock_send.call_args_list[1][0][1]
-    assert sent_payload["interactive"]["type"] == "list"
-    assert "Choose language" in sent_payload["interactive"]["body"]["text"]
+    # Greeting at language stage re-sends intro + buttons
+    assert mock_send.call_count == 3
+    sent_payload = mock_send.call_args_list[2][0][1]
+    assert sent_payload["interactive"]["type"] == "button"
+    titles = [b["reply"]["title"] for b in sent_payload["interactive"]["action"]["buttons"]]
+    assert titles == ["English", "Kiswahili"]
 
 @pytest.mark.asyncio
 @patch("channels.whatsapp._send_payload", new_callable=AsyncMock)
@@ -270,8 +281,8 @@ async def test_handle_whatsapp_webhook_select_language(mock_send):
                         "from": "254700000000",
                         "type": "interactive",
                         "interactive": {
-                            "type": "list_reply",
-                            "list_reply": {
+                            "type": "button_reply",
+                            "button_reply": {
                                 "id": "1",
                                 "title": "English"
                             }
@@ -285,11 +296,12 @@ async def test_handle_whatsapp_webhook_select_language(mock_send):
     resp = await handle_whatsapp_webhook(req)
     assert resp.status_code == 200
     
-    # Name prompt should be sent (after marking read)
+    # Warm WhatsApp name prompt should be sent (after marking read)
     assert mock_send.call_count == 2
     sent_payload = mock_send.call_args_list[1][0][1]
     assert sent_payload["type"] == "text"
-    assert "What should we call you" in sent_payload["text"]["body"]
+    assert "English it is" in sent_payload["text"]["body"]
+    assert "What is your name" in sent_payload["text"]["body"]
     
     # Session state should be updated to stage "name" and language "english"
     sess = session_store.get("254700000000", "whatsapp")
